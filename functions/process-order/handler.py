@@ -26,15 +26,91 @@ def log(level, msg, **fields):
 
 def process_message(order):
     """Traite UNE commande. Lève une exception pour la signaler en échec."""
-    # TODO 1 : réserver la clé d'idempotence avec dynamodb.put_item et
-    #          ConditionExpression="attribute_not_exists(pk)"
-    #          Item : pk, status=IN_PROGRESS, orderId, ttl=maintenant + TTL_SECONDS.
-    #          ConditionalCheckFailedException => doublon : décider quoi faire
-    #          (indice : que se passe-t-il si la clé est IN_PROGRESS depuis un plantage ?).
-    # TODO 2 : écrire la commande dans la table orders.
-    # TODO 3 : publier l'événement OrderConfirmed dans le stream (kinesis.put_record).
-    # TODO 4 : marquer la clé DONE (update_item) SEULEMENT à la fin.
-    raise NotImplementedError
+    order_id = order["orderId"]
+    correlation_id = order["correlationId"]
+    idempotency_key = order["idempotencyKey"]
+
+    try:
+        dynamodb.put_item(
+            TableName=TABLE_IDEMPOTENCY,
+            Item={
+                "pk": {"S": idempotency_key},
+                "status": {"S": "IN_PROGRESS"},
+                "stage": {"S": "RESERVED"},
+                "orderId": {"S": order_id},
+                "ttl": {"N": str(int(time.time()) + TTL_SECONDS)},
+            },
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+        stage = "RESERVED"
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+
+        existing = dynamodb.get_item(
+            TableName=TABLE_IDEMPOTENCY,
+            Key={"pk": {"S": idempotency_key}},
+            ConsistentRead=True,
+        ).get("Item")
+        if not existing:
+            raise RuntimeError("Réservation d'idempotence introuvable")
+        if existing["status"]["S"] == "DONE":
+            log("info", "doublon ignoré", correlationId=correlation_id, orderId=order_id)
+            return
+        stage = existing.get("stage", {}).get("S", "RESERVED")
+
+    if stage == "RESERVED":
+        existing_order = dynamodb.get_item(
+            TableName=TABLE_ORDERS,
+            Key={"orderId": {"S": order_id}},
+            ConsistentRead=True,
+        ).get("Item")
+        if not existing_order:
+            dynamodb.put_item(
+                TableName=TABLE_ORDERS,
+                Item={
+                    "orderId": {"S": order_id},
+                    "correlationId": {"S": correlation_id},
+                    "idempotencyKey": {"S": idempotency_key},
+                    "eventId": {"S": str(order["eventId"])},
+                    "seats": {"N": str(order["seats"])},
+                    "email": {"S": str(order["email"])},
+                    "createdAt": {"S": str(order["createdAt"])},
+                },
+            )
+
+        dynamodb.update_item(
+            TableName=TABLE_IDEMPOTENCY,
+            Key={"pk": {"S": idempotency_key}},
+            UpdateExpression="SET #stage = :stage",
+            ExpressionAttributeNames={"#stage": "stage"},
+            ExpressionAttributeValues={":stage": {"S": "ORDER_WRITTEN"}},
+        )
+
+    event = {
+        "type": "OrderConfirmed",
+        "orderId": order_id,
+        "correlationId": correlation_id,
+        "idempotencyKey": idempotency_key,
+        "eventId": order["eventId"],
+        "seats": order["seats"],
+        "email": order["email"],
+        "confirmedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    kinesis.put_record(
+        StreamName=STREAM_NAME,
+        PartitionKey=correlation_id,
+        Data=json.dumps(event).encode("utf-8"),
+    )
+
+    dynamodb.update_item(
+        TableName=TABLE_IDEMPOTENCY,
+        Key={"pk": {"S": idempotency_key}},
+        UpdateExpression="SET #status = :done",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":done": {"S": "DONE"}},
+    )
+    log("info", "commande traitée", correlationId=correlation_id, orderId=order_id)
 
 
 def handler(event, context):

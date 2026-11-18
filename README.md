@@ -10,7 +10,7 @@ Flux visé : API → `create-order` → file SQS → `process-order` → table `
 | `docker-compose.yml` | LocalStack 3.8.1, édition communautaire sans compte (SQS, DynamoDB, Kinesis, Lambda, IAM, CloudWatch Logs) |
 | `functions/create-order/` | Squelette TypeScript (Node.js 20) avec des `TODO` à remplir |
 | `functions/process-order/` | Squelette Python 3.12 avec des `TODO` à remplir |
-| `loadtest/k6.js` | Charge : 50 requêtes/s pendant 60 s, une clé d'idempotence unique par requête |
+| `loadtest/k6.js` | Charge limitée pour LocalStack : 20 requêtes/s pendant 150 s, une clé unique |
 | `scripts/smoke.sh` | Tests de fumée : 202/400, doublon, message empoisonné vers la DLQ |
 | `Makefile` | `make up`, `make bootstrap`, `make deploy`, `make load`, `make smoke`, `make reset`, `make down` |
 | `scripts/deploy.sh` | Fourni : construit et déploie `create-order` et `process-order`, relançable |
