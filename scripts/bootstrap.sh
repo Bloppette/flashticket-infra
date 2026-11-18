@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
 export AWS_ENDPOINT_URL="${AWS_ENDPOINT_URL:-http://localhost:4566}"
@@ -10,14 +9,16 @@ AWS="${AWS_CMD:-aws --endpoint-url $AWS_ENDPOINT_URL}"
 echo "== Création de la DLQ"
 $AWS sqs create-queue --queue-name flashticket-orders-dlq >/dev/null
 
-DLQ_URL=$($AWS sqs get-queue-url --queue-name flashticket-orders-dlq --query QueueUrl --output text)
+DLQ_URL=$($AWS sqs create-queue --queue-name flashticket-orders-dlq --query QueueUrl --output text) 
 DLQ_ARN=$($AWS sqs get-queue-attributes --queue-url "$DLQ_URL" --attribute-names QueueArn --query Attributes.QueueArn --output text)
-REDRIVE="{\"deadLetterTargetArn\":\"$DLQ_ARN\",\"maxReceiveCount\":\"3\"}"
+REDRIVE="{"deadLetterTargetArn":"$DLQ_ARN","maxReceiveCount":"3"}"
 
 echo "== Création de la file principale"
-aws sqs create-queue \ 
-  --queue-name flashticket-orders-dlq \ 
-  --query QueueUrl --output text) 
+ATTRS="{\"VisibilityTimeout\":\"60\",\"RedrivePolicy\":\"$REDRIVE\"}"
+
+$AWS sqs create-queue \
+  --queue-name flashticket-orders \
+  --attributes $ATTRS >/dev/null
 
 create_table() {
   local table_name=$1
